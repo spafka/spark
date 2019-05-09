@@ -56,6 +56,9 @@
 # - SPARK_DAEMON_CLASSPATH, to set the classpath for all daemons
 # - SPARK_PUBLIC_DNS, to set the public dns name of the master or workers
 
+
+
+
 # Generic options for the daemons used in the standalone deploy mode
 # - SPARK_CONF_DIR      Alternate conf dir. (Default: ${SPARK_HOME}/conf)
 # - SPARK_LOG_DIR       Where log files are stored.  (Default: ${SPARK_HOME}/logs)
@@ -67,3 +70,24 @@
 # You might get better performance to enable these options if using native BLAS (see SPARK-21305).
 # - MKL_NUM_THREADS=1        Disable multi-threading of Intel MKL
 # - OPENBLAS_NUM_THREADS=1   Disable multi-threading of OpenBLAS
+
+ export SPARK_PRINT_LAUNCH_COMMAND=true
+# export SPARK_MASTER_HOST=localhost
+ export SPARK_MASTER_PORT=7077
+ export SPARK_WORKER_CORES=4
+ export SPARK_EXECUTOR_CORES=2
+ export SPARK_EXECUTOR_MEMORY=2G
+ export SPARK_DRIVER_MEMORY=2G
+ uname -a |grep 'Linux'
+if [ $? == 0 ]; then
+# mac
+   export MESOS_NATIVE_JAVA_LIBRARY=/usr/local/lib/libmesos.so
+else
+# LINUX
+   export MESOS_NATIVE_JAVA_LIBRARY=/usr/local/lib/libmesos.dylib
+fi
+   export SPARK_EXECUTOR_URI=http://master:80/spark-2.4.2-bin-2.7.4.tgz
+# export SPARK_MESOS_DISPATCHER_HOST=localhost
+# export HADOOP_CONF_DIR=/usr/local/hadoop-2.7.3
+
+
