@@ -24,14 +24,27 @@ import java.nio.charset.StandardCharsets
 import scala.collection.JavaConverters._
 
 import org.apache.commons.io.IOUtils
+import org.apache.kafka.clients.consumer.ConsumerConfig
 
 import org.apache.spark.SparkEnv
 import org.apache.spark.internal.Logging
+import org.apache.spark.internal.config.Network.NETWORK_TIMEOUT
 import org.apache.spark.scheduler.ExecutorCacheTaskLocation
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.execution.streaming.{HDFSMetadataLog, SerializedOffset}
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchStream.scala
+import org.apache.spark.sql.execution.streaming.sources.RateControlMicroBatchStream
+import org.apache.spark.sql.kafka010.KafkaSourceProvider.{INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE}
+import org.apache.spark.sql.sources.v2.reader._
+import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchStream, Offset}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.util.UninterruptibleThread
+
+/**
+ * A [[MicroBatchStream]] that reads data from Kafka.
+=======
 import org.apache.spark.sql.kafka010.KafkaSourceProvider.{INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE}
 import org.apache.spark.sql.sources.v2.DataSourceOptions
 import org.apache.spark.sql.sources.v2.reader.{InputPartition, InputPartitionReader}
@@ -41,6 +54,7 @@ import org.apache.spark.util.UninterruptibleThread
 
 /**
  * A [[MicroBatchReader]] that reads data from Kafka.
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchReader.scala
  *
  * The [[KafkaSourceOffset]] is the custom [[Offset]] defined for this source that contains
  * a map of TopicPartition -> offset. Note that this offset is 1 + (available offset). For
@@ -55,24 +69,32 @@ import org.apache.spark.util.UninterruptibleThread
  * To avoid this issue, you should make sure stopping the query before stopping the Kafka brokers
  * and not use wrong broker addresses.
  */
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchStream.scala
+private[kafka010] class KafkaMicroBatchStream(
+=======
 private[kafka010] class KafkaMicroBatchReader(
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchReader.scala
     kafkaOffsetReader: KafkaOffsetReader,
     executorKafkaParams: ju.Map[String, Object],
-    options: DataSourceOptions,
+    options: CaseInsensitiveStringMap,
     metadataPath: String,
     startingOffsets: KafkaOffsetRangeLimit,
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchStream.scala
+    failOnDataLoss: Boolean) extends RateControlMicroBatchStream with Logging {
+=======
     failOnDataLoss: Boolean)
   extends MicroBatchReader with Logging {
 
   private var startPartitionOffsets: PartitionOffsetMap = _
   private var endPartitionOffsets: PartitionOffsetMap = _
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchReader.scala
 
   private val pollTimeoutMs = options.getLong(
-    "kafkaConsumer.pollTimeoutMs",
-    SparkEnv.get.conf.getTimeAsSeconds("spark.network.timeout", "120s") * 1000L)
+    KafkaSourceProvider.CONSUMER_POLL_TIMEOUT,
+    SparkEnv.get.conf.get(NETWORK_TIMEOUT) * 1000L)
 
-  private val maxOffsetsPerTrigger =
-    Option(options.get("maxOffsetsPerTrigger").orElse(null)).map(_.toLong)
+  private val maxOffsetsPerTrigger = Option(options.get(KafkaSourceProvider.MAX_OFFSET_PER_TRIGGER))
+    .map(_.toLong)
 
   private val rangeCalculator = KafkaOffsetRangeCalculator(options)
   /**
@@ -80,6 +102,27 @@ private[kafka010] class KafkaMicroBatchReader(
    * called in StreamExecutionThread. Otherwise, interrupting a thread while running
    * `KafkaConsumer.poll` may hang forever (KAFKA-1894).
    */
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchStream.scala
+  override def initialOffset(): Offset = {
+    KafkaSourceOffset(getOrCreateInitialPartitionOffsets())
+  }
+
+  override def latestOffset(start: Offset): Offset = {
+    val startPartitionOffsets = start.asInstanceOf[KafkaSourceOffset].partitionToOffsets
+    val latestPartitionOffsets = kafkaOffsetReader.fetchLatestOffsets(Some(startPartitionOffsets))
+    endPartitionOffsets = KafkaSourceOffset(maxOffsetsPerTrigger.map { maxOffsets =>
+      rateLimit(maxOffsets, startPartitionOffsets, latestPartitionOffsets)
+    }.getOrElse {
+      latestPartitionOffsets
+    })
+    endPartitionOffsets
+  }
+
+  override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
+    val startPartitionOffsets = start.asInstanceOf[KafkaSourceOffset].partitionToOffsets
+    val endPartitionOffsets = end.asInstanceOf[KafkaSourceOffset].partitionToOffsets
+
+=======
   private lazy val initialPartitionOffsets = getOrCreateInitialPartitionOffsets()
 
   override def setOffsetRange(start: ju.Optional[Offset], end: ju.Optional[Offset]): Unit = {
@@ -104,6 +147,7 @@ private[kafka010] class KafkaMicroBatchReader(
   }
 
   override def planInputPartitions(): ju.List[InputPartition[InternalRow]] = {
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchReader.scala
     // Find the new partitions, and get their earliest offsets
     val newPartitions = endPartitionOffsets.keySet.diff(startPartitionOffsets.keySet)
     val newPartitionInitialOffsets = kafkaOffsetReader.fetchEarliestOffsets(newPartitions.toSeq)
@@ -122,7 +166,13 @@ private[kafka010] class KafkaMicroBatchReader(
     // Find deleted partitions, and report data loss if required
     val deletedPartitions = startPartitionOffsets.keySet.diff(endPartitionOffsets.keySet)
     if (deletedPartitions.nonEmpty) {
-      reportDataLoss(s"$deletedPartitions are gone. Some data may have been missed")
+      val message =
+        if (kafkaOffsetReader.driverKafkaParams.containsKey(ConsumerConfig.GROUP_ID_CONFIG)) {
+          s"$deletedPartitions are gone. ${KafkaSourceProvider.CUSTOM_GROUP_ID_ERROR_MESSAGE}"
+        } else {
+          s"$deletedPartitions are gone. Some data may have been missed."
+        }
+      reportDataLoss(message)
     }
 
     // Use the end partitions to calculate offset ranges to ignore partitions that have
@@ -162,12 +212,17 @@ private[kafka010] class KafkaMicroBatchReader(
     }.asJava
   }
 
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchStream.scala
+  override def createReaderFactory(): PartitionReaderFactory = {
+    KafkaMicroBatchReaderFactory
+=======
   override def getStartOffset: Offset = {
     KafkaSourceOffset(startPartitionOffsets)
   }
 
   override def getEndOffset: Offset = {
     KafkaSourceOffset(endPartitionOffsets)
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaMicroBatchReader.scala
   }
 
   override def deserializeOffset(json: String): Offset = {
@@ -236,7 +291,7 @@ private[kafka010] class KafkaMicroBatchReader(
       until.map {
         case (tp, end) =>
           tp -> sizes.get(tp).map { size =>
-            val begin = from.get(tp).getOrElse(fromNew(tp))
+            val begin = from.getOrElse(tp, fromNew(tp))
             val prorate = limit * (size / total)
             // Don't completely starve small topicpartitions
             val prorateLong = (if (prorate < 1) Math.ceil(prorate) else Math.floor(prorate)).toLong

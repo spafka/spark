@@ -27,33 +27,43 @@ import scala.collection.JavaConverters._
 import org.apache.commons.io.IOUtils
 
 import org.apache.spark.internal.Logging
+<<<<<<< HEAD:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchStream.scala
+import org.apache.spark.sql.SparkSession
+=======
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.{Row, SparkSession}
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchReader.scala
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.streaming._
-import org.apache.spark.sql.sources.v2.DataSourceOptions
 import org.apache.spark.sql.sources.v2.reader._
+<<<<<<< HEAD:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchStream.scala
+import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchStream, Offset}
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
+import org.apache.spark.util.{ManualClock, SystemClock}
+
+class RateStreamMicroBatchStream(
+    rowsPerSecond: Long,
+    // The default values here are used in tests.
+    rampUpTimeSeconds: Long = 0,
+    numPartitions: Int = 1,
+    options: CaseInsensitiveStringMap,
+    checkpointLocation: String)
+  extends MicroBatchStream with Logging {
+=======
 import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchReader, Offset}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.util.{ManualClock, SystemClock}
 
 class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation: String)
   extends MicroBatchReader with Logging {
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchReader.scala
   import RateStreamProvider._
 
   private[sources] val clock = {
     // The option to use a manual clock is provided only for unit testing purposes.
     if (options.getBoolean("useManualClock", false)) new ManualClock else new SystemClock
   }
-
-  private val rowsPerSecond =
-    options.get(ROWS_PER_SECOND).orElse("1").toLong
-
-  private val rampUpTimeSeconds =
-    Option(options.get(RAMP_UP_TIME).orElse(null.asInstanceOf[String]))
-      .map(JavaUtils.timeStringAsSec(_))
-      .getOrElse(0L)
 
   private val maxSeconds = Long.MaxValue / rowsPerSecond
 
@@ -122,6 +132,12 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
     }.asInstanceOf[LongOffset]
   }
 
+<<<<<<< HEAD:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchStream.scala
+
+  override def planInputPartitions(start: Offset, end: Offset): Array[InputPartition] = {
+    val startSeconds = start.asInstanceOf[LongOffset].offset
+    val endSeconds = end.asInstanceOf[LongOffset].offset
+=======
   override def getStartOffset(): Offset = {
     if (start == null) throw new IllegalStateException("start offset not set")
     start
@@ -138,6 +154,7 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
   override def planInputPartitions(): java.util.List[InputPartition[InternalRow]] = {
     val startSeconds = LongOffset.convert(start).map(_.offset).getOrElse(0L)
     val endSeconds = LongOffset.convert(end).map(_.offset).getOrElse(0L)
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchReader.scala
     assert(startSeconds <= endSeconds, s"startSeconds($startSeconds) > endSeconds($endSeconds)")
     if (endSeconds > maxSeconds) {
       throw new ArithmeticException("Integer overflow. Max offset with " +
@@ -159,19 +176,20 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
     val localStartTimeMs = creationTimeMs + TimeUnit.SECONDS.toMillis(startSeconds)
     val relativeMsPerValue =
       TimeUnit.SECONDS.toMillis(endSeconds - startSeconds).toDouble / (rangeEnd - rangeStart)
-    val numPartitions = {
-      val activeSession = SparkSession.getActiveSession
-      require(activeSession.isDefined)
-      Option(options.get(NUM_PARTITIONS).orElse(null.asInstanceOf[String]))
-        .map(_.toInt)
-        .getOrElse(activeSession.get.sparkContext.defaultParallelism)
-    }
 
     (0 until numPartitions).map { p =>
-      new RateStreamMicroBatchInputPartition(
+      RateStreamMicroBatchInputPartition(
         p, numPartitions, rangeStart, rangeEnd, localStartTimeMs, relativeMsPerValue)
+<<<<<<< HEAD:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchStream.scala
+    }.toArray
+  }
+
+  override def createReaderFactory(): PartitionReaderFactory = {
+    RateStreamMicroBatchReaderFactory
+=======
         : InputPartition[InternalRow]
     }.toList.asJava
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateStreamMicroBatchReader.scala
   }
 
   override def commit(end: Offset): Unit = {}
@@ -180,7 +198,7 @@ class RateStreamMicroBatchReader(options: DataSourceOptions, checkpointLocation:
 
   override def toString: String = s"RateStreamV2[rowsPerSecond=$rowsPerSecond, " +
     s"rampUpTimeSeconds=$rampUpTimeSeconds, " +
-    s"numPartitions=${options.get(NUM_PARTITIONS).orElse("default")}"
+    s"numPartitions=${options.getOrDefault(NUM_PARTITIONS, "default")}"
 }
 
 class RateStreamMicroBatchInputPartition(

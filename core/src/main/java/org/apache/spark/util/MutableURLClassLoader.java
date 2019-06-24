@@ -17,6 +17,12 @@
 
 package org.apache.spark.util;
 
+<<<<<<< HEAD:sql/core/src/main/scala/org/apache/spark/sql/execution/streaming/sources/RateControlMicroBatchStream.scala
+import org.apache.spark.sql.sources.v2.reader.streaming.{MicroBatchStream, Offset}
+
+// A special `MicroBatchStream` that can get latestOffset with a start offset.
+trait RateControlMicroBatchStream extends MicroBatchStream {
+=======
 import java.net.URL;
 import java.net.URLClassLoader;
 
@@ -28,6 +34,7 @@ public class MutableURLClassLoader extends URLClassLoader {
   static {
     ClassLoader.registerAsParallelCapable();
   }
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:core/src/main/java/org/apache/spark/util/MutableURLClassLoader.java
 
   public MutableURLClassLoader(URL[] urls, ClassLoader parent) {
     super(urls, parent);

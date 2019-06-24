@@ -17,6 +17,9 @@
 
 package org.apache.spark.sql.sources.v2.writer;
 
+<<<<<<< HEAD:sql/catalyst/src/main/java/org/apache/spark/sql/sources/v2/writer/BatchWrite.java
+import org.apache.spark.annotation.Evolving;
+=======
 import org.apache.spark.annotation.InterfaceStability;
 import org.apache.spark.sql.SaveMode;
 import org.apache.spark.sql.catalyst.InternalRow;
@@ -25,6 +28,7 @@ import org.apache.spark.sql.sources.v2.StreamWriteSupport;
 import org.apache.spark.sql.sources.v2.WriteSupport;
 import org.apache.spark.sql.streaming.OutputMode;
 import org.apache.spark.sql.types.StructType;
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/java/org/apache/spark/sql/sources/v2/writer/DataSourceWriter.java
 
 /**
  * A data source writer that is returned by
@@ -52,8 +56,13 @@ import org.apache.spark.sql.types.StructType;
  *
  * Please refer to the documentation of commit/abort methods for detailed specifications.
  */
+<<<<<<< HEAD:sql/catalyst/src/main/java/org/apache/spark/sql/sources/v2/writer/BatchWrite.java
+@Evolving
+public interface BatchWrite {
+=======
 @InterfaceStability.Evolving
 public interface DataSourceWriter {
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:sql/core/src/main/java/org/apache/spark/sql/sources/v2/writer/DataSourceWriter.java
 
   /**
    * Creates a writer factory which will be serialized and sent to executors.

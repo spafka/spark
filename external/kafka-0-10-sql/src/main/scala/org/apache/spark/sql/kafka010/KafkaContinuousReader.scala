@@ -20,7 +20,7 @@ package org.apache.spark.sql.kafka010
 import java.{util => ju}
 import java.util.concurrent.TimeoutException
 
-import org.apache.kafka.clients.consumer.{ConsumerRecord, OffsetOutOfRangeException}
+import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord, OffsetOutOfRangeException}
 import org.apache.kafka.common.TopicPartition
 
 import org.apache.spark.TaskContext
@@ -30,37 +30,70 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
 import org.apache.spark.sql.kafka010.KafkaSourceProvider.{INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE, INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE}
 import org.apache.spark.sql.sources.v2.reader._
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+import org.apache.spark.sql.sources.v2.reader.streaming._
+
+/**
+ * A [[ContinuousStream]] for data from kafka.
+=======
 import org.apache.spark.sql.sources.v2.reader.streaming.{ContinuousInputPartitionReader, ContinuousReader, Offset, PartitionOffset}
 import org.apache.spark.sql.types.StructType
 
 /**
  * A [[ContinuousReader]] for data from kafka.
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
  *
  * @param offsetReader  a reader used to get kafka offsets. Note that the actual data will be
  *                      read by per-task consumers generated later.
  * @param kafkaParams   String params for per-task Kafka consumers.
- * @param sourceOptions The [[org.apache.spark.sql.sources.v2.DataSourceOptions]] params which
- *                      are not Kafka consumer params.
+ * @param sourceOptions Params which are not Kafka consumer params.
  * @param metadataPath Path to a directory this reader can use for writing metadata.
  * @param initialOffsets The Kafka offsets to start reading data at.
  * @param failOnDataLoss Flag indicating whether reading should fail in data loss
  *                       scenarios, where some offsets after the specified initial ones can't be
  *                       properly read.
  */
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+class KafkaContinuousStream(
+=======
 class KafkaContinuousReader(
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
     offsetReader: KafkaOffsetReader,
     kafkaParams: ju.Map[String, Object],
     sourceOptions: Map[String, String],
     metadataPath: String,
     initialOffsets: KafkaOffsetRangeLimit,
     failOnDataLoss: Boolean)
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+  extends ContinuousStream with Logging {
+
+  private val pollTimeoutMs =
+    sourceOptions.getOrElse(KafkaSourceProvider.CONSUMER_POLL_TIMEOUT, "512").toLong
+
+  // Initialized when creating reader factories. If this diverges from the partitions at the latest
+  // offsets, we need to reconfigure.
+  // Exposed outside this object only for unit tests.
+  @volatile private[sql] var knownPartitions: Set[TopicPartition] = _
+=======
   extends ContinuousReader with Logging {
 
   private lazy val session = SparkSession.getActiveSession.get
   private lazy val sc = session.sparkContext
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
 
-  private val pollTimeoutMs = sourceOptions.getOrElse("kafkaConsumer.pollTimeoutMs", "512").toLong
 
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+  override def initialOffset(): Offset = {
+    val offsets = initialOffsets match {
+      case EarliestOffsetRangeLimit => KafkaSourceOffset(offsetReader.fetchEarliestOffsets())
+      case LatestOffsetRangeLimit => KafkaSourceOffset(offsetReader.fetchLatestOffsets(None))
+      case SpecificOffsetRangeLimit(p) => offsetReader.fetchSpecificOffsets(p, reportDataLoss)
+    }
+    logInfo(s"Initial offsets: $offsets")
+    offsets
+  }
+
+=======
   // Initialized when creating reader factories. If this diverges from the partitions at the latest
   // offsets, we need to reconfigure.
   // Exposed outside this object only for unit tests.
@@ -83,14 +116,20 @@ class KafkaContinuousReader(
 
   override def getStartOffset(): Offset = offset
 
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
   override def deserializeOffset(json: String): Offset = {
     KafkaSourceOffset(JsonUtils.partitionOffsets(json))
   }
 
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+  override def planInputPartitions(start: Offset): Array[InputPartition] = {
+    val oldStartPartitionOffsets = start.asInstanceOf[KafkaSourceOffset].partitionToOffsets
+=======
   override def planInputPartitions(): ju.List[InputPartition[InternalRow]] = {
     import scala.collection.JavaConverters._
 
     val oldStartPartitionOffsets = KafkaSourceOffset.getPartitionOffsets(offset)
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
 
     val currentPartitionSet = offsetReader.fetchEarliestOffsets().keySet
     val newPartitions = currentPartitionSet.diff(oldStartPartitionOffsets.keySet)
@@ -98,7 +137,17 @@ class KafkaContinuousReader(
 
     val deletedPartitions = oldStartPartitionOffsets.keySet.diff(currentPartitionSet)
     if (deletedPartitions.nonEmpty) {
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+      val message = if (
+        offsetReader.driverKafkaParams.containsKey(ConsumerConfig.GROUP_ID_CONFIG)) {
+        s"$deletedPartitions are gone. ${KafkaSourceProvider.CUSTOM_GROUP_ID_ERROR_MESSAGE}"
+      } else {
+        s"$deletedPartitions are gone. Some data may have been missed."
+      }
+      reportDataLoss(message)
+=======
       reportDataLoss(s"Some partitions were deleted: $deletedPartitions")
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
     }
 
     val startOffsets = newPartitionOffsets ++
@@ -108,9 +157,18 @@ class KafkaContinuousReader(
     startOffsets.toSeq.map {
       case (topicPartition, start) =>
         KafkaContinuousInputPartition(
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+          topicPartition, start, kafkaParams, pollTimeoutMs, failOnDataLoss)
+    }.toArray
+  }
+
+  override def createContinuousReaderFactory(): ContinuousPartitionReaderFactory = {
+    KafkaContinuousReaderFactory
+=======
           topicPartition, start, kafkaParams, pollTimeoutMs, failOnDataLoss
         ): InputPartition[InternalRow]
     }.asJava
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
   }
 
   /** Stop this source and free any resources it has allocated. */
@@ -128,7 +186,11 @@ class KafkaContinuousReader(
   }
 
   override def needsReconfiguration(): Boolean = {
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+    offsetReader.fetchLatestOffsets(None).keySet != knownPartitions
+=======
     knownPartitions != null && offsetReader.fetchLatestOffsets(None).keySet != knownPartitions
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
   }
 
   override def toString(): String = s"KafkaSource[$offsetReader]"
@@ -172,11 +234,14 @@ case class KafkaContinuousInputPartition(
     new KafkaContinuousInputPartitionReader(
       topicPartition, kafkaOffset.partitionOffset, kafkaParams, pollTimeoutMs, failOnDataLoss)
   }
+<<<<<<< HEAD:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousStream.scala
+=======
 
   override def createPartitionReader(): KafkaContinuousInputPartitionReader = {
     new KafkaContinuousInputPartitionReader(
       topicPartition, startOffset, kafkaParams, pollTimeoutMs, failOnDataLoss)
   }
+>>>>>>> a71e90a76a982dde09d3b60bb2cf4548c62f57a1:external/kafka-0-10-sql/src/main/scala/org/apache/spark/sql/kafka010/KafkaContinuousReader.scala
 }
 
 /**
