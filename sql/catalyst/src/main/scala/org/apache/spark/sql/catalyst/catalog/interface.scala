@@ -18,6 +18,7 @@
 package org.apache.spark.sql.catalyst.catalog
 
 import java.net.URI
+import java.time.ZoneOffset
 import java.util.Date
 
 import scala.collection.mutable
@@ -244,7 +245,8 @@ case class CatalogTable(
     unsupportedFeatures: Seq[String] = Seq.empty,
     tracksPartitionsInCatalog: Boolean = false,
     schemaPreservesCase: Boolean = true,
-    ignoredProperties: Map[String, String] = Map.empty) {
+    ignoredProperties: Map[String, String] = Map.empty,
+    viewOriginalText: Option[String] = None) {
 
   import CatalogTable._
 
@@ -331,6 +333,7 @@ case class CatalogTable(
     comment.foreach(map.put("Comment", _))
     if (tableType == CatalogTableType.VIEW) {
       viewText.foreach(map.put("View Text", _))
+      viewOriginalText.foreach(map.put("View Original Text", _))
       viewDefaultDatabase.foreach(map.put("View Default Database", _))
       if (viewQueryColumnNames.nonEmpty) {
         map.put("View Query Output Columns", viewQueryColumnNames.mkString("[", ", ", "]"))
@@ -371,7 +374,7 @@ object CatalogTable {
 /**
  * This class of statistics is used in [[CatalogTable]] to interact with metastore.
  * We define this new class instead of directly using [[Statistics]] here because there are no
- * concepts of attributes or broadcast hint in catalog.
+ * concepts of attributes in catalog.
  */
 case class CatalogStatistics(
     sizeInBytes: BigInt,
@@ -472,10 +475,10 @@ object CatalogColumnStat extends Logging {
   private val KEY_MAX_LEN = "maxLen"
   private val KEY_HISTOGRAM = "histogram"
 
-  val VERSION = 1
+  val VERSION = 2
 
   private def getTimestampFormatter(): TimestampFormatter = {
-    TimestampFormatter(format = "yyyy-MM-dd HH:mm:ss.SSSSSS", timeZone = DateTimeUtils.TimeZoneUTC)
+    TimestampFormatter(format = "yyyy-MM-dd HH:mm:ss.SSSSSS", zoneId = ZoneOffset.UTC)
   }
 
   /**
@@ -510,8 +513,8 @@ object CatalogColumnStat extends Logging {
    */
   def toExternalString(v: Any, colName: String, dataType: DataType): String = {
     val externalValue = dataType match {
-      case DateType => DateTimeUtils.toJavaDate(v.asInstanceOf[Int])
-      case TimestampType => DateTimeUtils.toJavaTimestamp(v.asInstanceOf[Long])
+      case DateType => DateFormatter().format(v.asInstanceOf[Int])
+      case TimestampType => getTimestampFormatter().format(v.asInstanceOf[Long])
       case BooleanType | _: IntegralType | FloatType | DoubleType => v
       case _: DecimalType => v.asInstanceOf[Decimal].toJavaBigDecimal
       // This version of Spark does not use min/max for binary/string types so we ignore it.

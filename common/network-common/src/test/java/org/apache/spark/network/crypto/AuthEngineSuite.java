@@ -118,6 +118,20 @@ public class AuthEngineSuite {
       challenge.cipher, challenge.keyLength, challenge.nonce, badChallenge));
   }
 
+  @Test(expected = InvalidKeyException.class)
+  public void testBadKeySize() throws Exception {
+    Map<String, String> mconf = ImmutableMap.of("spark.network.crypto.keyLength", "42");
+    TransportConf conf = new TransportConf("rpc", new MapConfigProvider(mconf));
+
+    try (AuthEngine engine = new AuthEngine("appId", "secret", conf)) {
+      engine.challenge();
+      fail("Should have failed to create challenge message.");
+
+      // Call close explicitly to make sure it's idempotent.
+      engine.close();
+    }
+  }
+
   @Test
   public void testEncryptedMessage() throws Exception {
     AuthEngine client = new AuthEngine("appId", "secret", conf);
@@ -172,8 +186,7 @@ public class AuthEngineSuite {
             firstTime = false;
             return 0L;
           } else {
-            WritableByteChannel channel =
-              invocationOnMock.getArgumentAt(0, WritableByteChannel.class);
+            WritableByteChannel channel = invocationOnMock.getArgument(0);
             channel.write(ByteBuffer.wrap(new byte[testDataLength]));
             return (long) testDataLength;
           }
@@ -190,20 +203,6 @@ public class AuthEngineSuite {
     } finally {
       client.close();
       server.close();
-    }
-  }
-
-  @Test(expected = InvalidKeyException.class)
-  public void testBadKeySize() throws Exception {
-    Map<String, String> mconf = ImmutableMap.of("spark.network.crypto.keyLength", "42");
-    TransportConf conf = new TransportConf("rpc", new MapConfigProvider(mconf));
-
-    try (AuthEngine engine = new AuthEngine("appId", "secret", conf)) {
-      engine.challenge();
-      fail("Should have failed to create challenge message.");
-
-      // Call close explicitly to make sure it's idempotent.
-      engine.close();
     }
   }
 }

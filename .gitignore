@@ -32,7 +32,13 @@ build/scala*
 build/zinc*
 cache
 checkpoint
-
+conf/*.cmd
+conf/*.conf
+conf/*.properties
+conf/*.sh
+conf/*.xml
+conf/java-opts
+conf/slaves
 dependency-reduced-pom.xml
 derby.log
 dev/create-release/*final
@@ -71,7 +77,6 @@ target/
 unit-tests.log
 work/
 docs/.jekyll-metadata
-*.crc
 
 # For Hive
 TempStatsStore/
@@ -89,3 +94,6 @@ spark-warehouse/
 *.Rproj.*
 
 .Rproj.user
+
+# For SBT
+.jvmopts

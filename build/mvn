@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-#!/usr/bin/env bash
 
 #
 # Licensed to the Apache Software Foundation (ASF) under one or more
@@ -117,7 +116,8 @@ install_zinc() {
 # the build/ folder
 install_scala() {
   # determine the Scala version used in Spark
-  local scala_version=`grep "scala.version" "${_DIR}/../pom.xml" | head -n1 | awk -F '[<>]' '{print $3}'`
+  local scala_binary_version=`grep "scala.binary.version" "${_DIR}/../pom.xml" | head -n1 | awk -F '[<>]' '{print $3}'`
+  local scala_version=`grep "scala.version" "${_DIR}/../pom.xml" | grep ${scala_binary_version} | head -n1 | awk -F '[<>]' '{print $3}'`
   local scala_bin="${_DIR}/scala-${scala_version}/bin/scala"
   local TYPESAFE_MIRROR=${TYPESAFE_MIRROR:-https://downloads.lightbend.com}
 
@@ -133,12 +133,6 @@ install_scala() {
 # Setup healthy defaults for the Zinc port if none were provided from
 # the environment
 ZINC_PORT=${ZINC_PORT:-"3030"}
-
-# Remove `--force` for backward compatibility.
-if [ "$1" == "--force" ]; then
-  echo "WARNING: '--force' is deprecated and ignored."
-  shift
-fi
 
 # Install the proper version of Scala, Zinc and Maven for the build
 install_zinc

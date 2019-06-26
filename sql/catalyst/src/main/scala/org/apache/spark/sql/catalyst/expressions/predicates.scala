@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, CodeGe
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.util.TypeUtils
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 
@@ -151,7 +152,7 @@ case class Not(child: Expression)
 case class InSubquery(values: Seq[Expression], query: ListQuery)
   extends Predicate with Unevaluable {
 
-  @transient lazy val value: Expression = if (values.length > 1) {
+  @transient private lazy val value: Expression = if (values.length > 1) {
     CreateNamedStruct(values.zipWithIndex.flatMap {
       case (v: NamedExpression, _) => Seq(Literal(v.name), v)
       case (v, idx) => Seq(Literal(s"_$idx"), v)
@@ -162,37 +163,35 @@ case class InSubquery(values: Seq[Expression], query: ListQuery)
 
 
   override def checkInputDataTypes(): TypeCheckResult = {
-    val mismatchOpt = !DataType.equalsStructurally(query.dataType, value.dataType,
-      ignoreNullability = true)
-    if (mismatchOpt) {
-      if (values.length != query.childOutputs.length) {
-        TypeCheckResult.TypeCheckFailure(
-          s"""
-             |The number of columns in the left hand side of an IN subquery does not match the
-             |number of columns in the output of subquery.
-             |#columns in left hand side: ${values.length}.
-             |#columns in right hand side: ${query.childOutputs.length}.
-             |Left side columns:
-             |[${values.map(_.sql).mkString(", ")}].
-             |Right side columns:
-             |[${query.childOutputs.map(_.sql).mkString(", ")}].""".stripMargin)
-      } else {
-        val mismatchedColumns = values.zip(query.childOutputs).flatMap {
-          case (l, r) if l.dataType != r.dataType =>
-            Seq(s"(${l.sql}:${l.dataType.catalogString}, ${r.sql}:${r.dataType.catalogString})")
-          case _ => None
-        }
-        TypeCheckResult.TypeCheckFailure(
-          s"""
-             |The data type of one or more elements in the left hand side of an IN subquery
-             |is not compatible with the data type of the output of the subquery
-             |Mismatched columns:
-             |[${mismatchedColumns.mkString(", ")}]
-             |Left side:
-             |[${values.map(_.dataType.catalogString).mkString(", ")}].
-             |Right side:
-             |[${query.childOutputs.map(_.dataType.catalogString).mkString(", ")}].""".stripMargin)
+    if (values.length != query.childOutputs.length) {
+      TypeCheckResult.TypeCheckFailure(
+        s"""
+           |The number of columns in the left hand side of an IN subquery does not match the
+           |number of columns in the output of subquery.
+           |#columns in left hand side: ${values.length}.
+           |#columns in right hand side: ${query.childOutputs.length}.
+           |Left side columns:
+           |[${values.map(_.sql).mkString(", ")}].
+           |Right side columns:
+           |[${query.childOutputs.map(_.sql).mkString(", ")}].""".stripMargin)
+    } else if (!DataType.equalsStructurally(
+      query.dataType, value.dataType, ignoreNullability = true)) {
+
+      val mismatchedColumns = values.zip(query.childOutputs).flatMap {
+        case (l, r) if l.dataType != r.dataType =>
+          Seq(s"(${l.sql}:${l.dataType.catalogString}, ${r.sql}:${r.dataType.catalogString})")
+        case _ => None
       }
+      TypeCheckResult.TypeCheckFailure(
+        s"""
+           |The data type of one or more elements in the left hand side of an IN subquery
+           |is not compatible with the data type of the output of the subquery
+           |Mismatched columns:
+           |[${mismatchedColumns.mkString(", ")}]
+           |Left side:
+           |[${values.map(_.dataType.catalogString).mkString(", ")}].
+           |Right side:
+           |[${query.childOutputs.map(_.dataType.catalogString).mkString(", ")}].""".stripMargin)
     } else {
       TypeUtils.checkForOrderingExpr(value.dataType, s"function $prettyName")
     }
@@ -377,6 +376,19 @@ case class InSet(child: Expression, hset: Set[Any]) extends UnaryExpression with
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    if (canBeComputedUsingSwitch && hset.size <= SQLConf.get.optimizerInSetSwitchThreshold) {
+      genCodeWithSwitch(ctx, ev)
+    } else {
+      genCodeWithSet(ctx, ev)
+    }
+  }
+
+  private def canBeComputedUsingSwitch: Boolean = child.dataType match {
+    case ByteType | ShortType | IntegerType | DateType => true
+    case _ => false
+  }
+
+  private def genCodeWithSet(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     nullSafeCodeGen(ctx, ev, c => {
       val setTerm = ctx.addReferenceObj("set", set)
       val setIsNull = if (hasNull) {
@@ -389,6 +401,34 @@ case class InSet(child: Expression, hset: Set[Any]) extends UnaryExpression with
          |$setIsNull
        """.stripMargin
     })
+  }
+
+  // spark.sql.optimizer.inSetSwitchThreshold has an appropriate upper limit,
+  // so the code size should not exceed 64KB
+  private def genCodeWithSwitch(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val caseValuesGen = hset.filter(_ != null).map(Literal(_).genCode(ctx))
+    val valueGen = child.genCode(ctx)
+
+    val caseBranches = caseValuesGen.map(literal =>
+      code"""
+        case ${literal.value}:
+          ${ev.value} = true;
+          break;
+       """)
+
+    ev.copy(code =
+      code"""
+        ${valueGen.code}
+        ${CodeGenerator.JAVA_BOOLEAN} ${ev.isNull} = ${valueGen.isNull};
+        ${CodeGenerator.JAVA_BOOLEAN} ${ev.value} = false;
+        if (!${valueGen.isNull}) {
+          switch (${valueGen.value}) {
+            ${caseBranches.mkString("\n")}
+            default:
+              ${ev.isNull} = $hasNull;
+          }
+        }
+       """)
   }
 
   override def sql: String = {

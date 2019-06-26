@@ -1,6 +1,21 @@
 ---
 layout: global
 title: Apache Avro Data Source Guide
+license: |
+  Licensed to the Apache Software Foundation (ASF) under one or more
+  contributor license agreements.  See the NOTICE file distributed with
+  this work for additional information regarding copyright ownership.
+  The ASF licenses this file to You under the Apache License, Version 2.0
+  (the "License"); you may not use this file except in compliance with
+  the License.  You may obtain a copy of the License at
+ 
+     http://www.apache.org/licenses/LICENSE-2.0
+ 
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
 ---
 
 * This will become a table of contents (this text will be scraped).
@@ -66,9 +81,9 @@ write.df(select(df, "name", "favorite_color"), "namesAndFavColors.avro", "avro")
 ## to_avro() and from_avro()
 The Avro package provides function `to_avro` to encode a column as binary in Avro 
 format, and `from_avro()` to decode Avro binary data into a column. Both functions transform one column to 
-another column, and the input/output SQL data type can be complex type or primitive type.
+another column, and the input/output SQL data type can be a complex type or a primitive type.
 
-Using Avro record as columns are useful when reading from or writing to a streaming source like Kafka. Each 
+Using Avro record as columns is useful when reading from or writing to a streaming source like Kafka. Each
 Kafka key-value record will be augmented with some metadata, such as the ingestion timestamp into Kafka, the offset in Kafka, etc.
 * If the "value" field that contains your data is in Avro, you could use `from_avro()` to extract your data, enrich it, clean it, and then push it downstream to Kafka again or write it out to a file.
 * `to_avro()` can be used to turn structs into Avro records. This method is particularly useful when you would like to re-encode multiple columns into a single one when writing data out to Kafka.
@@ -78,7 +93,7 @@ Both functions are currently only available in Scala and Java.
 <div class="codetabs">
 <div data-lang="scala" markdown="1">
 {% highlight scala %}
-import org.apache.spark.sql.avro._
+import org.apache.spark.sql.avro.functions._
 
 // `from_avro` requires Avro schema in JSON string format.
 val jsonFormatSchema = new String(Files.readAllBytes(Paths.get("./examples/src/main/resources/user.avsc")))
@@ -109,7 +124,8 @@ val query = output
 </div>
 <div data-lang="java" markdown="1">
 {% highlight java %}
-import org.apache.spark.sql.avro.*;
+import static org.apache.spark.sql.functions.col;
+import static org.apache.spark.sql.avro.functions.*;
 
 // `from_avro` requires Avro schema in JSON string format.
 String jsonFormatSchema = new String(Files.readAllBytes(Paths.get("./examples/src/main/resources/user.avsc")));
@@ -138,11 +154,45 @@ StreamingQuery query = output
 
 {% endhighlight %}
 </div>
+<div data-lang="python" markdown="1">
+{% highlight python %}
+from pyspark.sql.avro.functions import from_avro, to_avro
+
+# `from_avro` requires Avro schema in JSON string format.
+jsonFormatSchema = open("examples/src/main/resources/user.avsc", "r").read()
+
+df = spark\
+  .readStream\
+  .format("kafka")\
+  .option("kafka.bootstrap.servers", "host1:port1,host2:port2")\
+  .option("subscribe", "topic1")\
+  .load()
+
+# 1. Decode the Avro data into a struct;
+# 2. Filter by column `favorite_color`;
+# 3. Encode the column `name` in Avro format.
+output = df\
+  .select(from_avro("value", jsonFormatSchema).alias("user"))\
+  .where('user.favorite_color == "red"')\
+  .select(to_avro("user.name").alias("value"))
+
+query = output\
+  .writeStream\
+  .format("kafka")\
+  .option("kafka.bootstrap.servers", "host1:port1,host2:port2")\
+  .option("topic", "topic2")\
+  .start()
+
+{% endhighlight %}
+</div>
 </div>
 
 ## Data Source Option
 
-Data source options of Avro can be set using the `.option` method on `DataFrameReader` or `DataFrameWriter`.
+Data source options of Avro can be set via:
+ * the `.option` method on `DataFrameReader` or `DataFrameWriter`.
+ * the `options` parameter in function `from_avro`.
+
 <table class="table">
   <tr><th><b>Property Name</b></th><th><b>Default</b></th><th><b>Meaning</b></th><th><b>Scope</b></th></tr>
   <tr>
@@ -176,6 +226,19 @@ Data source options of Avro can be set using the `.option` method on `DataFrameR
     <td>The <code>compression</code> option allows to specify a compression codec used in write.<br>
   Currently supported codecs are <code>uncompressed</code>, <code>snappy</code>, <code>deflate</code>, <code>bzip2</code> and <code>xz</code>.<br> If the option is not set, the configuration <code>spark.sql.avro.compression.codec</code> config is taken into account.</td>
     <td>write</td>
+  </tr>
+  <tr>
+    <td><code>mode</code></td>
+    <td>FAILFAST</td>
+    <td>The <code>mode</code> option allows to specify parse mode for function <code>from_avro</code>.<br>
+      Currently supported modes are:
+      <ul>
+        <li><code>FAILFAST</code>: Throws an exception on processing corrupted record.</li>
+        <li><code>PERMISSIVE</code>: Corrupt records are processed as null result. Therefore, the
+        data schema is forced to be fully nullable, which might be different from the one user provided.</li>
+      </ul>
+    </td>
+    <td>function <code>from_avro</code></td>
   </tr>
 </table>
 

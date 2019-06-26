@@ -18,7 +18,7 @@
 package org.apache.spark.sql.kafka010
 
 import java.{util => ju}
-import java.util.concurrent.{Executors, ThreadFactory}
+import java.util.concurrent.Executors
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
@@ -46,22 +46,20 @@ import org.apache.spark.util.{ThreadUtils, UninterruptibleThread}
  */
 private[kafka010] class KafkaOffsetReader(
     consumerStrategy: ConsumerStrategy,
-    driverKafkaParams: ju.Map[String, Object],
+    val driverKafkaParams: ju.Map[String, Object],
     readerOptions: Map[String, String],
     driverGroupIdPrefix: String) extends Logging {
   /**
    * Used to ensure execute fetch operations execute in an UninterruptibleThread
    */
-  val kafkaReaderThread = Executors.newSingleThreadExecutor(new ThreadFactory {
-    override def newThread(r: Runnable): Thread = {
-      val t = new UninterruptibleThread("Kafka Offset Reader") {
-        override def run(): Unit = {
-          r.run()
-        }
+  val kafkaReaderThread = Executors.newSingleThreadExecutor((r: Runnable) => {
+    val t = new UninterruptibleThread("Kafka Offset Reader") {
+      override def run(): Unit = {
+        r.run()
       }
-      t.setDaemon(true)
-      t
     }
+    t.setDaemon(true)
+    t
   })
   val execContext = ExecutionContext.fromExecutorService(kafkaReaderThread)
 
@@ -82,17 +80,19 @@ private[kafka010] class KafkaOffsetReader(
     assert(Thread.currentThread().isInstanceOf[UninterruptibleThread])
     if (_consumer == null) {
       val newKafkaParams = new ju.HashMap[String, Object](driverKafkaParams)
-      newKafkaParams.put(ConsumerConfig.GROUP_ID_CONFIG, nextGroupId())
+      if (driverKafkaParams.get(ConsumerConfig.GROUP_ID_CONFIG) == null) {
+        newKafkaParams.put(ConsumerConfig.GROUP_ID_CONFIG, nextGroupId())
+      }
       _consumer = consumerStrategy.createConsumer(newKafkaParams)
     }
     _consumer
   }
 
   private val maxOffsetFetchAttempts =
-    readerOptions.getOrElse("fetchOffset.numRetries", "3").toInt
+    readerOptions.getOrElse(KafkaSourceProvider.FETCH_OFFSET_NUM_RETRY, "3").toInt
 
   private val offsetFetchAttemptIntervalMs =
-    readerOptions.getOrElse("fetchOffset.retryIntervalMs", "1000").toLong
+    readerOptions.getOrElse(KafkaSourceProvider.FETCH_OFFSET_RETRY_INTERVAL_MS, "1000").toLong
 
   private def nextGroupId(): String = {
     groupId = driverGroupIdPrefix + "-" + nextId

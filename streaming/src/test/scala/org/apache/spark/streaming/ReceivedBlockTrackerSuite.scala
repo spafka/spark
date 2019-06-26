@@ -22,11 +22,11 @@ import java.nio.ByteBuffer
 
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.duration._
-import scala.language.{implicitConversions, postfixOps}
+import scala.language.implicitConversions
 import scala.util.Random
 
 import org.apache.hadoop.conf.Configuration
-import org.mockito.Matchers.any
+import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.{doThrow, reset, spy}
 import org.scalatest.{BeforeAndAfter, Matchers}
 import org.scalatest.concurrent.Eventually._
@@ -276,7 +276,7 @@ class ReceivedBlockTrackerSuite
     getWrittenLogData(getWriteAheadLogFiles().last) should contain(createBatchCleanup(batchTime1))
 
     // Verify that at least one log file gets deleted
-    eventually(timeout(10 seconds), interval(10 millisecond)) {
+    eventually(timeout(10.seconds), interval(10.millisecond)) {
       getWriteAheadLogFiles() should not contain oldestLogFile
     }
     printLogFiles("After clean")

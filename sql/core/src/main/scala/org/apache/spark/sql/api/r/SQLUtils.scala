@@ -30,8 +30,9 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.expressions.GenericRowWithSchema
+import org.apache.spark.sql.catalyst.expressions.{ExprUtils, GenericRowWithSchema}
 import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
+import org.apache.spark.sql.execution.arrow.ArrowConverters
 import org.apache.spark.sql.execution.command.ShowTablesCommand
 import org.apache.spark.sql.internal.StaticSQLConf.CATALOG_IMPLEMENTATION
 import org.apache.spark.sql.types._
@@ -119,7 +120,7 @@ private[sql] object SQLUtils extends Logging {
   private[this] def doConversion(data: Object, dataType: DataType): Object = {
     data match {
       case d: java.lang.Double if dataType == FloatType =>
-        new java.lang.Float(d)
+        java.lang.Float.valueOf(d.toFloat)
       // Scala Map is the only allowed external type of map type in Row.
       case m: java.util.Map[_, _] => m.asScala
       case _ => data
@@ -232,5 +233,30 @@ private[sql] object SQLUtils extends Logging {
         sparkSession.catalog.currentDatabase
     }
     sparkSession.sessionState.catalog.listTables(db).map(_.table).toArray
+  }
+
+  def createArrayType(column: Column): ArrayType = {
+    new ArrayType(ExprUtils.evalTypeExpr(column.expr), true)
+  }
+
+  /**
+   * R callable function to read a file in Arrow stream format and create an `RDD`
+   * using each serialized ArrowRecordBatch as a partition.
+   */
+  def readArrowStreamFromFile(
+      sparkSession: SparkSession,
+      filename: String): JavaRDD[Array[Byte]] = {
+    ArrowConverters.readArrowStreamFromFile(sparkSession.sqlContext, filename)
+  }
+
+  /**
+   * R callable function to create a `DataFrame` from a `JavaRDD` of serialized
+   * ArrowRecordBatches.
+   */
+  def toDataFrame(
+      arrowBatchRDD: JavaRDD[Array[Byte]],
+      schema: StructType,
+      sparkSession: SparkSession): DataFrame = {
+    ArrowConverters.toDataFrame(arrowBatchRDD, schema.json, sparkSession.sqlContext)
   }
 }

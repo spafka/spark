@@ -20,7 +20,7 @@ package org.apache.spark.sql.kafka010
 import java.io._
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Paths}
-import java.util.{Locale, Optional}
+import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -35,17 +35,17 @@ import org.scalatest.time.SpanSugar._
 
 import org.apache.spark.sql.{Dataset, ForeachWriter, SparkSession}
 import org.apache.spark.sql.execution.datasources.v2.StreamingDataSourceV2Relation
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.execution.streaming.continuous.ContinuousExecution
 import org.apache.spark.sql.functions.{count, window}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.kafka010.KafkaSourceProvider._
-import org.apache.spark.sql.sources.v2.DataSourceOptions
-import org.apache.spark.sql.sources.v2.reader.streaming.{Offset => OffsetV2}
-import org.apache.spark.sql.streaming.{ProcessingTime, StreamTest}
-import org.apache.spark.sql.streaming.Trigger
+import org.apache.spark.sql.sources.v2.reader.streaming.SparkDataStream
+import org.apache.spark.sql.streaming.{StreamTest, Trigger}
 import org.apache.spark.sql.streaming.util.StreamManualClock
 import org.apache.spark.sql.test.SharedSQLContext
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.util.CaseInsensitiveStringMap
 
 abstract class KafkaSourceTest extends StreamTest with SharedSQLContext with KafkaTest {
 
@@ -95,7 +95,7 @@ abstract class KafkaSourceTest extends StreamTest with SharedSQLContext with Kaf
       message: String = "",
       topicAction: (String, Option[Int]) => Unit = (_, _) => {}) extends AddData {
 
-    override def addData(query: Option[StreamExecution]): (BaseStreamingSource, Offset) = {
+    override def addData(query: Option[StreamExecution]): (SparkDataStream, Offset) = {
       query match {
         // Make sure no Spark job is running when deleting a topic
         case Some(m: MicroBatchExecution) => m.processAllAvailable()
@@ -115,16 +115,13 @@ abstract class KafkaSourceTest extends StreamTest with SharedSQLContext with Kaf
         query.nonEmpty,
         "Cannot add data when there is no query for finding the active kafka source")
 
-      val sources = {
+      val sources: Seq[SparkDataStream] = {
         query.get.logicalPlan.collect {
           case StreamingExecutionRelation(source: KafkaSource, _) => source
-          case StreamingExecutionRelation(source: KafkaMicroBatchReader, _) => source
-        } ++ (query.get.lastExecution match {
-          case null => Seq()
-          case e => e.logical.collect {
-            case StreamingDataSourceV2Relation(_, _, _, reader: KafkaContinuousReader) => reader
-          }
-        })
+          case r: StreamingDataSourceV2Relation if r.stream.isInstanceOf[KafkaMicroBatchStream] ||
+              r.stream.isInstanceOf[KafkaContinuousStream] =>
+            r.stream
+        }
       }.distinct
 
       if (sources.isEmpty) {
@@ -270,7 +267,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
     }
 
     testStream(mapped)(
-      StartStream(ProcessingTime(100), clock),
+      StartStream(Trigger.ProcessingTime(100), clock),
       waitUntilBatchProcessed,
       // 1 from smallest, 1 from middle, 8 from biggest
       CheckAnswer(1, 10, 100, 101, 102, 103, 104, 105, 106, 107),
@@ -281,7 +278,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
         11, 108, 109, 110, 111, 112, 113, 114, 115, 116
       ),
       StopStream,
-      StartStream(ProcessingTime(100), clock),
+      StartStream(Trigger.ProcessingTime(100), clock),
       waitUntilBatchProcessed,
       // smallest now empty, 1 more from middle, 9 more from biggest
       CheckAnswer(1, 10, 100, 101, 102, 103, 104, 105, 106, 107,
@@ -316,7 +313,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
 
     val mapped = kafka.map(kv => kv._2.toInt + 1)
     testStream(mapped)(
-      StartStream(trigger = ProcessingTime(1)),
+      StartStream(trigger = Trigger.ProcessingTime(1)),
       makeSureGetOffsetCalled,
       AddKafkaData(Set(topic), 1, 2, 3),
       CheckAnswer(2, 3, 4),
@@ -639,7 +636,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
     }
 
     testStream(kafka)(
-      StartStream(ProcessingTime(100), clock),
+      StartStream(Trigger.ProcessingTime(100), clock),
       waitUntilBatchProcessed,
       // 5 from smaller topic, 5 from bigger one
       CheckLastBatch((0 to 4) ++ (100 to 104): _*),
@@ -652,7 +649,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
       // smaller topic empty, 5 from bigger one
       CheckLastBatch(110 to 114: _*),
       StopStream,
-      StartStream(ProcessingTime(100), clock),
+      StartStream(Trigger.ProcessingTime(100), clock),
       waitUntilBatchProcessed,
       // smallest now empty, 5 from bigger one
       CheckLastBatch(115 to 119: _*),
@@ -660,6 +657,42 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
       waitUntilBatchProcessed,
       // smallest now empty, 5 from bigger one
       CheckLastBatch(120 to 124: _*)
+    )
+  }
+
+  test("allow group.id override") {
+    // Tests code path KafkaSourceProvider.{sourceSchema(.), createSource(.)}
+    // as well as KafkaOffsetReader.createConsumer(.)
+    val topic = newTopic()
+    testUtils.createTopic(topic, partitions = 3)
+    testUtils.sendMessages(topic, (1 to 10).map(_.toString).toArray, Some(0))
+    testUtils.sendMessages(topic, (11 to 20).map(_.toString).toArray, Some(1))
+    testUtils.sendMessages(topic, (21 to 30).map(_.toString).toArray, Some(2))
+
+    val customGroupId = "id-" + Random.nextInt()
+    val dsKafka = spark
+      .readStream
+      .format("kafka")
+      .option("kafka.group.id", customGroupId)
+      .option("kafka.bootstrap.servers", testUtils.brokerAddress)
+      .option("subscribe", topic)
+      .option("startingOffsets", "earliest")
+      .load()
+      .selectExpr("CAST(value AS STRING)")
+      .as[String]
+      .map(_.toInt)
+
+    testStream(dsKafka)(
+      makeSureGetOffsetCalled,
+      CheckAnswer(1 to 30: _*),
+      Execute { _ =>
+        val consumerGroups = testUtils.listConsumerGroups()
+        val validGroups = consumerGroups.valid().get()
+        val validGroupsId = validGroups.asScala.map(_.groupId())
+        assert(validGroupsId.exists(_ === customGroupId), "Valid consumer groups don't " +
+          s"contain the expected group id - Valid consumer groups: $validGroupsId / " +
+          s"expected group id: $customGroupId")
+      }
     )
   }
 
@@ -682,18 +715,37 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
 
     val join = values.join(values, "key")
 
-    testStream(join)(
-      makeSureGetOffsetCalled,
-      AddKafkaData(Set(topic), 1, 2),
-      CheckAnswer((1, 1, 1), (2, 2, 2)),
-      AddKafkaData(Set(topic), 6, 3),
-      CheckAnswer((1, 1, 1), (2, 2, 2), (3, 3, 3), (1, 6, 1), (1, 1, 6), (1, 6, 6)),
-      AssertOnQuery { q =>
+    def checkQuery(check: AssertOnQuery): Unit = {
+      testStream(join)(
+        makeSureGetOffsetCalled,
+        AddKafkaData(Set(topic), 1, 2),
+        CheckAnswer((1, 1, 1), (2, 2, 2)),
+        AddKafkaData(Set(topic), 6, 3),
+        CheckAnswer((1, 1, 1), (2, 2, 2), (3, 3, 3), (1, 6, 1), (1, 1, 6), (1, 6, 6)),
+        check
+      )
+    }
+
+    withSQLConf(SQLConf.EXCHANGE_REUSE_ENABLED.key -> "false") {
+      checkQuery(AssertOnQuery { q =>
         assert(q.availableOffsets.iterator.size == 1)
+        // The kafka source is scanned twice because of self-join
+        assert(q.recentProgress.map(_.numInputRows).sum == 8)
+        true
+      })
+    }
+
+    withSQLConf(SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true") {
+      checkQuery(AssertOnQuery { q =>
+        assert(q.availableOffsets.iterator.size == 1)
+        assert(q.lastExecution.executedPlan.collect {
+          case r: ReusedExchangeExec => r
+        }.length == 1)
+        // The kafka source is scanned only once because of exchange reuse.
         assert(q.recentProgress.map(_.numInputRows).sum == 4)
         true
-      }
-    )
+      })
+    }
   }
 
   test("read Kafka transactional messages: read_committed") {
@@ -742,7 +794,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
     // The message values are the same as their offsets to make the test easy to follow
     testUtils.withTranscationalProducer { producer =>
       testStream(mapped)(
-        StartStream(ProcessingTime(100), clock),
+        StartStream(Trigger.ProcessingTime(100), clock),
         waitUntilBatchProcessed,
         CheckAnswer(),
         WithOffsetSync(topicPartition, expectedOffset = 5) { () =>
@@ -865,7 +917,7 @@ abstract class KafkaMicroBatchSourceSuiteBase extends KafkaSourceSuiteBase {
     // The message values are the same as their offsets to make the test easy to follow
     testUtils.withTranscationalProducer { producer =>
       testStream(mapped)(
-        StartStream(ProcessingTime(100), clock),
+        StartStream(Trigger.ProcessingTime(100), clock),
         waitUntilBatchProcessed,
         CheckNewAnswer(),
         WithOffsetSync(topicPartition, expectedOffset = 5) { () =>
@@ -1044,9 +1096,10 @@ class KafkaMicroBatchV2SourceSuite extends KafkaMicroBatchSourceSuiteBase {
     testStream(kafka)(
       makeSureGetOffsetCalled,
       AssertOnQuery { query =>
-        query.logicalPlan.collect {
-          case StreamingExecutionRelation(_: KafkaMicroBatchReader, _) => true
-        }.nonEmpty
+        query.logicalPlan.find {
+          case r: StreamingDataSourceV2Relation => r.stream.isInstanceOf[KafkaMicroBatchStream]
+          case _ => false
+        }.isDefined
       }
     )
   }
@@ -1070,17 +1123,15 @@ class KafkaMicroBatchV2SourceSuite extends KafkaMicroBatchSourceSuiteBase {
           "kafka.bootstrap.servers" -> testUtils.brokerAddress,
           "subscribe" -> topic
         ) ++ Option(minPartitions).map { p => "minPartitions" -> p}
-        val reader = provider.createMicroBatchReader(
-          Optional.empty[StructType], dir.getAbsolutePath, new DataSourceOptions(options.asJava))
-        reader.setOffsetRange(
-          Optional.of[OffsetV2](KafkaSourceOffset(Map(tp -> 0L))),
-          Optional.of[OffsetV2](KafkaSourceOffset(Map(tp -> 100L)))
-        )
-        val factories = reader.planInputPartitions().asScala
-          .map(_.asInstanceOf[KafkaMicroBatchInputPartition])
-        withClue(s"minPartitions = $minPartitions generated factories $factories\n\t") {
-          assert(factories.size == numPartitionsGenerated)
-          factories.foreach { f => assert(f.reuseKafkaConsumer == reusesConsumers) }
+        val dsOptions = new CaseInsensitiveStringMap(options.asJava)
+        val table = provider.getTable(dsOptions)
+        val stream = table.newScanBuilder(dsOptions).build().toMicroBatchStream(dir.getAbsolutePath)
+        val inputPartitions = stream.planInputPartitions(
+          KafkaSourceOffset(Map(tp -> 0L)),
+          KafkaSourceOffset(Map(tp -> 100L))).map(_.asInstanceOf[KafkaMicroBatchInputPartition])
+        withClue(s"minPartitions = $minPartitions generated factories $inputPartitions\n\t") {
+          assert(inputPartitions.size == numPartitionsGenerated)
+          inputPartitions.foreach { f => assert(f.reuseKafkaConsumer == reusesConsumers) }
         }
       }
     }
@@ -1253,7 +1304,6 @@ abstract class KafkaSourceSuiteBase extends KafkaSourceTest {
       assert(ex.getMessage.toLowerCase(Locale.ROOT).contains("not supported"))
     }
 
-    testUnsupportedConfig("kafka.group.id")
     testUnsupportedConfig("kafka.auto.offset.reset")
     testUnsupportedConfig("kafka.enable.auto.commit")
     testUnsupportedConfig("kafka.interceptor.classes")
@@ -1394,7 +1444,7 @@ abstract class KafkaSourceSuiteBase extends KafkaSourceTest {
     val reader = spark
       .readStream
       .format("kafka")
-      .option("startingOffsets", s"latest")
+      .option("startingOffsets", "latest")
       .option("kafka.bootstrap.servers", testUtils.brokerAddress)
       .option("kafka.metadata.max.age.ms", "1")
       .option("failOnDataLoss", failOnDataLoss.toString)

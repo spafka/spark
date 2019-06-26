@@ -45,13 +45,14 @@ import org.apache.spark.storage.*;
 import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.array.ByteArrayMethods;
 import org.apache.spark.util.Utils;
+import org.apache.spark.internal.config.package$;
 
 import static org.hamcrest.Matchers.greaterThan;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.mockito.Answers.RETURNS_SMART_NULLS;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
 
 
@@ -63,7 +64,7 @@ public abstract class AbstractBytesToBytesMapSuite {
   private TaskMemoryManager taskMemoryManager;
   private SerializerManager serializerManager = new SerializerManager(
       new JavaSerializer(new SparkConf()),
-      new SparkConf().set("spark.shuffle.spill.compress", "false"));
+      new SparkConf().set(package$.MODULE$.SHUFFLE_SPILL_COMPRESS(), false));
   private static final long PAGE_SIZE_BYTES = 1L << 26; // 64 megabytes
 
   final LinkedList<File> spillFilesCreated = new LinkedList<>();
@@ -77,10 +78,10 @@ public abstract class AbstractBytesToBytesMapSuite {
     memoryManager =
       new TestMemoryManager(
         new SparkConf()
-          .set("spark.memory.offHeap.enabled", "" + useOffHeapMemoryAllocator())
-          .set("spark.memory.offHeap.size", "256mb")
-          .set("spark.shuffle.spill.compress", "false")
-          .set("spark.shuffle.compress", "false"));
+          .set(package$.MODULE$.MEMORY_OFFHEAP_ENABLED(), useOffHeapMemoryAllocator())
+          .set(package$.MODULE$.MEMORY_OFFHEAP_SIZE(), 256 * 1024 * 1024L)
+          .set(package$.MODULE$.SHUFFLE_SPILL_COMPRESS(), false)
+          .set(package$.MODULE$.SHUFFLE_COMPRESS(), false));
     taskMemoryManager = new TaskMemoryManager(memoryManager, 0);
 
     tempDir = Utils.createTempDir(System.getProperty("java.io.tmpdir"), "unsafe-test");
@@ -532,7 +533,7 @@ public abstract class AbstractBytesToBytesMapSuite {
   @Test
   public void spillInIterator() throws IOException {
     BytesToBytesMap map = new BytesToBytesMap(
-      taskMemoryManager, blockManager, serializerManager, 1, 0.75, 1024, false);
+      taskMemoryManager, blockManager, serializerManager, 1, 0.75, 1024);
     try {
       int i;
       for (i = 0; i < 1024; i++) {
@@ -571,7 +572,7 @@ public abstract class AbstractBytesToBytesMapSuite {
   @Test
   public void multipleValuesForSameKey() {
     BytesToBytesMap map =
-      new BytesToBytesMap(taskMemoryManager, blockManager, serializerManager, 1, 0.5, 1024, false);
+      new BytesToBytesMap(taskMemoryManager, blockManager, serializerManager, 1, 0.5, 1024);
     try {
       int i;
       for (i = 0; i < 1024; i++) {
@@ -624,6 +625,17 @@ public abstract class AbstractBytesToBytesMapSuite {
     } catch (IllegalArgumentException e) {
       // expected exception
     }
+
+    try {
+      new BytesToBytesMap(
+        taskMemoryManager,
+        1,
+        TaskMemoryManager.MAXIMUM_PAGE_SIZE_BYTES + 1);
+      Assert.fail("Expected IllegalArgumentException to be thrown");
+    } catch (IllegalArgumentException e) {
+      // expected exception
+    }
+
   }
 
   @Test
@@ -675,7 +687,7 @@ public abstract class AbstractBytesToBytesMapSuite {
     MemoryMode mode = useOffHeapMemoryAllocator() ? MemoryMode.OFF_HEAP: MemoryMode.ON_HEAP;
     TestMemoryConsumer c1 = new TestMemoryConsumer(taskMemoryManager, mode);
     BytesToBytesMap map =
-      new BytesToBytesMap(taskMemoryManager, blockManager, serializerManager, 1, 0.5, 1024, false);
+      new BytesToBytesMap(taskMemoryManager, blockManager, serializerManager, 1, 0.5, 1024);
 
     Thread thread = new Thread(() -> {
       int i = 0;

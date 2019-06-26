@@ -21,7 +21,7 @@ import java.util.concurrent.TimeUnit
 
 import scala.concurrent.duration.Duration
 
-import org.apache.spark.annotation.InterfaceStability
+import org.apache.spark.annotation.Evolving
 import org.apache.spark.unsafe.types.CalendarInterval
 
 /**
@@ -46,7 +46,7 @@ import org.apache.spark.unsafe.types.CalendarInterval
  *
  * @since 2.0.0
  */
-@InterfaceStability.Evolving
+@Evolving
 @deprecated("use Trigger.ProcessingTime(intervalMs)", "2.2.0")
 case class ProcessingTime(intervalMs: Long) extends Trigger {
   require(intervalMs >= 0, "the interval of trigger should not be negative")
@@ -57,7 +57,7 @@ case class ProcessingTime(intervalMs: Long) extends Trigger {
  *
  * @since 2.0.0
  */
-@InterfaceStability.Evolving
+@Evolving
 @deprecated("use Trigger.ProcessingTime(intervalMs)", "2.2.0")
 object ProcessingTime {
 
@@ -78,7 +78,7 @@ object ProcessingTime {
     if (cal.months > 0) {
       throw new IllegalArgumentException(s"Doesn't support month or year interval: $interval")
     }
-    new ProcessingTime(cal.microseconds / 1000)
+    new ProcessingTime(TimeUnit.MICROSECONDS.toMillis(cal.microseconds))
   }
 
   /**

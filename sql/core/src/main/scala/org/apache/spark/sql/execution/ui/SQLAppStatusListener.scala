@@ -18,18 +18,17 @@ package org.apache.spark.sql.execution.ui
 
 import java.util.{Date, NoSuchElementException}
 import java.util.concurrent.ConcurrentHashMap
-import java.util.function.Function
 
 import scala.collection.JavaConverters._
 
 import org.apache.spark.{JobExecutionStatus, SparkConf}
 import org.apache.spark.internal.Logging
+import org.apache.spark.internal.config.Status._
 import org.apache.spark.scheduler._
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.metric._
 import org.apache.spark.sql.internal.StaticSQLConf._
 import org.apache.spark.status.{ElementTrackingStore, KVUtils, LiveEntity}
-import org.apache.spark.status.config._
 
 class SQLAppStatusListener(
     conf: SparkConf,
@@ -103,9 +102,9 @@ class SQLAppStatusListener(
 
     // Record the accumulator IDs for the stages of this job, so that the code that keeps
     // track of the metrics knows which accumulators to look at.
-    val accumIds = exec.metrics.map(_.accumulatorId).sorted.toList
+    val accumIds = exec.metrics.map(_.accumulatorId).toSet
     event.stageIds.foreach { id =>
-      stageMetrics.put(id, new LiveStageMetrics(id, 0, accumIds.toArray, new ConcurrentHashMap()))
+      stageMetrics.put(id, new LiveStageMetrics(id, 0, accumIds, new ConcurrentHashMap()))
     }
 
     exec.jobs = exec.jobs + (jobId -> JobExecutionStatus.RUNNING)
@@ -181,7 +180,6 @@ class SQLAppStatusListener(
   }
 
   private def aggregateMetrics(exec: LiveExecutionData): Map[Long, String] = {
-    val metricIds = exec.metrics.map(_.accumulatorId).sorted
     val metricTypes = exec.metrics.map { m => (m.accumulatorId, m.metricType) }.toMap
     val metrics = exec.stages.toSeq
       .flatMap { stageId => Option(stageMetrics.get(stageId)) }
@@ -189,15 +187,15 @@ class SQLAppStatusListener(
       .flatMap { metrics => metrics.ids.zip(metrics.values) }
 
     val aggregatedMetrics = (metrics ++ exec.driverAccumUpdates.toSeq)
-      .filter { case (id, _) => metricIds.contains(id) }
+      .filter { case (id, _) => metricTypes.contains(id) }
       .groupBy(_._1)
       .map { case (id, values) =>
-        id -> SQLMetrics.stringValue(metricTypes(id), values.map(_._2).toSeq)
+        id -> SQLMetrics.stringValue(metricTypes(id), values.map(_._2))
       }
 
     // Check the execution again for whether the aggregated metrics data has been calculated.
     // This can happen if the UI is requesting this data, and the onExecutionEnd handler is
-    // running at the same time. The metrics calculated for the UI can be innacurate in that
+    // running at the same time. The metrics calculated for the UI can be inaccurate in that
     // case, since the onExecutionEnd handler will clean up tracked stage metrics.
     if (exec.metricsValues != null) {
       exec.metricsValues
@@ -250,25 +248,25 @@ class SQLAppStatusListener(
     }
   }
 
+  private def toStoredNodes(nodes: Seq[SparkPlanGraphNode]): Seq[SparkPlanGraphNodeWrapper] = {
+    nodes.map {
+      case cluster: SparkPlanGraphCluster =>
+        val storedCluster = new SparkPlanGraphClusterWrapper(
+          cluster.id,
+          cluster.name,
+          cluster.desc,
+          toStoredNodes(cluster.nodes),
+          cluster.metrics)
+        new SparkPlanGraphNodeWrapper(null, storedCluster)
+
+      case node =>
+        new SparkPlanGraphNodeWrapper(node, null)
+    }
+  }
+
   private def onExecutionStart(event: SparkListenerSQLExecutionStart): Unit = {
     val SparkListenerSQLExecutionStart(executionId, description, details,
       physicalPlanDescription, sparkPlanInfo, time) = event
-
-    def toStoredNodes(nodes: Seq[SparkPlanGraphNode]): Seq[SparkPlanGraphNodeWrapper] = {
-      nodes.map {
-        case cluster: SparkPlanGraphCluster =>
-          val storedCluster = new SparkPlanGraphClusterWrapper(
-            cluster.id,
-            cluster.name,
-            cluster.desc,
-            toStoredNodes(cluster.nodes),
-            cluster.metrics)
-          new SparkPlanGraphNodeWrapper(null, storedCluster)
-
-        case node =>
-          new SparkPlanGraphNodeWrapper(node, null)
-      }
-    }
 
     val planGraph = SparkPlanGraph(sparkPlanInfo)
     val sqlPlanMetrics = planGraph.allNodes.flatMap { node =>
@@ -287,6 +285,27 @@ class SQLAppStatusListener(
     exec.physicalPlanDescription = physicalPlanDescription
     exec.metrics = sqlPlanMetrics
     exec.submissionTime = time
+    update(exec)
+  }
+
+  private def onAdaptiveExecutionUpdate(event: SparkListenerSQLAdaptiveExecutionUpdate): Unit = {
+    val SparkListenerSQLAdaptiveExecutionUpdate(
+      executionId, physicalPlanDescription, sparkPlanInfo) = event
+
+    val planGraph = SparkPlanGraph(sparkPlanInfo)
+    val sqlPlanMetrics = planGraph.allNodes.flatMap { node =>
+      node.metrics.map { metric => (metric.accumulatorId, metric) }
+    }.toMap.values.toList
+
+    val graphToStore = new SparkPlanGraphWrapper(
+      executionId,
+      toStoredNodes(planGraph.nodes),
+      planGraph.edges)
+    kvstore.write(graphToStore)
+
+    val exec = getOrCreateExecution(executionId)
+    exec.physicalPlanDescription = physicalPlanDescription
+    exec.metrics = sqlPlanMetrics
     update(exec)
   }
 
@@ -322,6 +341,7 @@ class SQLAppStatusListener(
 
   override def onOtherEvent(event: SparkListenerEvent): Unit = event match {
     case e: SparkListenerSQLExecutionStart => onExecutionStart(e)
+    case e: SparkListenerSQLAdaptiveExecutionUpdate => onAdaptiveExecutionUpdate(e)
     case e: SparkListenerSQLExecutionEnd => onExecutionEnd(e)
     case e: SparkListenerDriverAccumUpdates => onDriverAccumUpdates(e)
     case _ => // Ignore
@@ -329,9 +349,7 @@ class SQLAppStatusListener(
 
   private def getOrCreateExecution(executionId: Long): LiveExecutionData = {
     liveExecutions.computeIfAbsent(executionId,
-      new Function[Long, LiveExecutionData]() {
-        override def apply(key: Long): LiveExecutionData = new LiveExecutionData(executionId)
-      })
+      (_: Long) => new LiveExecutionData(executionId))
   }
 
   private def update(exec: LiveExecutionData, force: Boolean = false): Unit = {
@@ -409,7 +427,7 @@ private class LiveExecutionData(val executionId: Long) extends LiveEntity {
 private class LiveStageMetrics(
     val stageId: Int,
     var attemptId: Int,
-    val accumulatorIds: Array[Long],
+    val accumulatorIds: Set[Long],
     val taskMetrics: ConcurrentHashMap[Long, LiveTaskMetrics])
 
 private class LiveTaskMetrics(

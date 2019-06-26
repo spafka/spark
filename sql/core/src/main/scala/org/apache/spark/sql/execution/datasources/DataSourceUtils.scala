@@ -26,21 +26,6 @@ import org.apache.spark.sql.types._
 
 
 object DataSourceUtils {
-
-  /**
-   * Verify if the schema is supported in datasource in write path.
-   */
-  def verifyWriteSchema(format: FileFormat, schema: StructType): Unit = {
-    verifySchema(format, schema, isReadPath = false)
-  }
-
-  /**
-   * Verify if the schema is supported in datasource in read path.
-   */
-  def verifyReadSchema(format: FileFormat, schema: StructType): Unit = {
-    verifySchema(format, schema, isReadPath = true)
-  }
-
   /**
    * The key to use for storing partitionBy columns as options.
    */
@@ -63,9 +48,9 @@ object DataSourceUtils {
    * Verify if the schema is supported in datasource. This verification should be done
    * in a driver side.
    */
-  private def verifySchema(format: FileFormat, schema: StructType, isReadPath: Boolean): Unit = {
+  def verifySchema(format: FileFormat, schema: StructType): Unit = {
     schema.foreach { field =>
-      if (!format.supportDataType(field.dataType, isReadPath)) {
+      if (!format.supportDataType(field.dataType)) {
         throw new AnalysisException(
           s"$format data source does not support ${field.dataType.catalogString} data type.")
       }

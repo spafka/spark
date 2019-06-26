@@ -29,7 +29,6 @@ import org.apache.spark.sql.catalyst.plans.physical.{BroadcastDistribution, Dist
 import org.apache.spark.sql.execution.{BinaryExecNode, CodegenSupport, SparkPlan}
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.types.{BooleanType, LongType}
-import org.apache.spark.util.TaskCompletionListener
 
 /**
  * Performs an inner hash join of two child relations.  When the output RDD of this operator is

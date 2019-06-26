@@ -24,12 +24,11 @@ import org.scalatest.Matchers._
 import org.scalatest.concurrent.Eventually
 
 import org.apache.spark.{SparkConf, SparkFunSuite}
+import org.apache.spark.internal.config.Status._
 import org.apache.spark.status.ElementTrackingStore._
 import org.apache.spark.util.kvstore._
 
 class ElementTrackingStoreSuite extends SparkFunSuite with Eventually {
-
-  import config._
 
   test("asynchronous tracking single-fire") {
     val store = mock(classOf[KVStore])

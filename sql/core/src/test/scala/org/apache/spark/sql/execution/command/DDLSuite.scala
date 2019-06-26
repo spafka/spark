@@ -24,6 +24,8 @@ import java.util.Locale
 import org.apache.hadoop.fs.Path
 import org.scalatest.BeforeAndAfterEach
 
+import org.apache.spark.internal.config
+import org.apache.spark.internal.config.RDD_PARALLEL_LISTING_THRESHOLD
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SaveMode}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{FunctionRegistry, NoSuchPartitionException, NoSuchTableException, TempTableAlreadyExistsException}
@@ -376,41 +378,41 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     }
   }
 
-  test("CTAS a managed table with the existing empty directory") {
-    val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
+  private def withEmptyDirInTablePath(dirName: String)(f : File => Unit): Unit = {
+    val tableLoc =
+      new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier(dirName)))
     try {
       tableLoc.mkdir()
-      withTable("tab1") {
-        sql(s"CREATE TABLE tab1 USING ${dataSource} AS SELECT 1, 'a'")
-        checkAnswer(spark.table("tab1"), Row(1, "a"))
-      }
+      f(tableLoc)
     } finally {
       waitForTasksToFinish()
       Utils.deleteRecursively(tableLoc)
     }
   }
 
+
+  test("CTAS a managed table with the existing empty directory") {
+    withEmptyDirInTablePath("tab1") { tableLoc =>
+      withTable("tab1") {
+        sql(s"CREATE TABLE tab1 USING ${dataSource} AS SELECT 1, 'a'")
+        checkAnswer(spark.table("tab1"), Row(1, "a"))
+      }
+    }
+  }
+
   test("create a managed table with the existing empty directory") {
-    val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
-    try {
-      tableLoc.mkdir()
+    withEmptyDirInTablePath("tab1") { tableLoc =>
       withTable("tab1") {
         sql(s"CREATE TABLE tab1 (col1 int, col2 string) USING ${dataSource}")
         sql("INSERT INTO tab1 VALUES (1, 'a')")
         checkAnswer(spark.table("tab1"), Row(1, "a"))
       }
-    } finally {
-      waitForTasksToFinish()
-      Utils.deleteRecursively(tableLoc)
     }
   }
 
   test("create a managed table with the existing non-empty directory") {
     withTable("tab1") {
-      val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab1")))
-      try {
-        // create an empty hidden file
-        tableLoc.mkdir()
+      withEmptyDirInTablePath("tab1") { tableLoc =>
         val hiddenGarbageFile = new File(tableLoc.getCanonicalPath, ".garbage")
         hiddenGarbageFile.createNewFile()
         val exMsg = "Can not create the managed table('`tab1`'). The associated location"
@@ -438,28 +440,20 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
           }.getMessage
           assert(ex.contains(exMsgWithDefaultDB))
         }
-      } finally {
-        waitForTasksToFinish()
-        Utils.deleteRecursively(tableLoc)
       }
     }
   }
 
   test("rename a managed table with existing empty directory") {
-    val tableLoc = new File(spark.sessionState.catalog.defaultTablePath(TableIdentifier("tab2")))
-    try {
+    withEmptyDirInTablePath("tab2") { tableLoc =>
       withTable("tab1") {
         sql(s"CREATE TABLE tab1 USING $dataSource AS SELECT 1, 'a'")
-        tableLoc.mkdir()
         val ex = intercept[AnalysisException] {
           sql("ALTER TABLE tab1 RENAME TO tab2")
         }.getMessage
         val expectedMsg = "Can not rename the managed table('`tab1`'). The associated location"
         assert(ex.contains(expectedMsg))
       }
-    } finally {
-      waitForTasksToFinish()
-      Utils.deleteRecursively(tableLoc)
     }
   }
 
@@ -1129,13 +1123,13 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
   }
 
   test("alter table: recover partitions (sequential)") {
-    withSQLConf("spark.rdd.parallelListingThreshold" -> "10") {
+    withSQLConf(RDD_PARALLEL_LISTING_THRESHOLD.key -> "10") {
       testRecoverPartitions()
     }
   }
 
   test("alter table: recover partition (parallel)") {
-    withSQLConf("spark.rdd.parallelListingThreshold" -> "0") {
+    withSQLConf(RDD_PARALLEL_LISTING_THRESHOLD.key -> "0") {
       testRecoverPartitions()
     }
   }
@@ -1378,7 +1372,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
       // if (isUsingHiveMetastore) {
       //  assert(storageFormat.properties.get("path") === expected)
       // }
-      assert(storageFormat.locationUri === Some(expected))
+      assert(storageFormat.locationUri.map(_.getPath) === Some(expected.getPath))
     }
     // set table location
     sql("ALTER TABLE dbx.tab1 SET LOCATION '/path/to/your/lovely/heart'")
@@ -2572,7 +2566,10 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     }
   }
 
-  val supportedNativeFileFormatsForAlterTableAddColumns = Seq("parquet", "json", "csv")
+  val supportedNativeFileFormatsForAlterTableAddColumns = Seq("csv", "json", "parquet",
+    "org.apache.spark.sql.execution.datasources.csv.CSVFileFormat",
+    "org.apache.spark.sql.execution.datasources.json.JsonFileFormat",
+    "org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat")
 
   supportedNativeFileFormatsForAlterTableAddColumns.foreach { provider =>
     test(s"alter datasource table add columns - $provider") {
@@ -2716,17 +2713,24 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     }
   }
 
+  test("set command rejects SparkConf entries") {
+    val ex = intercept[AnalysisException] {
+      sql(s"SET ${config.CPUS_PER_TASK.key} = 4")
+    }
+    assert(ex.getMessage.contains("Spark config"))
+  }
+
   test("Refresh table before drop database cascade") {
     withTempDir { tempDir =>
       val file1 = new File(tempDir + "/first.csv")
-      val writer1 = new PrintWriter(file1)
-      writer1.write("first")
-      writer1.close()
+      Utils.tryWithResource(new PrintWriter(file1)) { writer =>
+        writer.write("first")
+      }
 
       val file2 = new File(tempDir + "/second.csv")
-      val writer2 = new PrintWriter(file2)
-      writer2.write("second")
-      writer2.close()
+      Utils.tryWithResource(new PrintWriter(file2)) { writer =>
+        writer.write("second")
+      }
 
       withDatabase("foo") {
         withTable("foo.first") {

@@ -89,10 +89,10 @@ class ConvertToLocalRelationSuite extends PlanTest {
   }
 }
 
+
 // Dummy expression used for testing. It reuses output row. Assumes child expr outputs an integer.
 case class ExprReuseOutput(child: Expression) extends UnaryExpression {
   override def dataType: DataType = StructType.fromDDL("a1 int")
-
   override def nullable: Boolean = true
 
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode =

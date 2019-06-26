@@ -27,6 +27,7 @@ import scala.collection.mutable.{HashMap, ListBuffer}
 import com.google.common.util.concurrent.MoreExecutors
 
 import org.apache.spark.SparkConf
+import org.apache.spark.internal.config.Status._
 import org.apache.spark.status.ElementTrackingStore._
 import org.apache.spark.util.{ThreadUtils, Utils}
 import org.apache.spark.util.kvstore._
@@ -48,8 +49,6 @@ import org.apache.spark.util.kvstore._
  * the calling thread by setting the `ASYNC_TRACKING_ENABLED` configuration to `false`.
  */
 private[spark] class ElementTrackingStore(store: KVStore, conf: SparkConf) extends KVStore {
-
-  import config._
 
   private class LatchedTriggers(val triggers: Seq[Trigger[_]]) {
     private val pending = new AtomicBoolean(false)

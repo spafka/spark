@@ -21,10 +21,10 @@ import java.util.Locale
 import javax.annotation.concurrent.GuardedBy
 
 import scala.collection.mutable
-import scala.language.existentials
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.analysis.FunctionRegistry.FunctionBuilder
@@ -87,7 +87,7 @@ trait FunctionRegistry {
   override def clone(): FunctionRegistry = throw new CloneNotSupportedException()
 }
 
-class SimpleFunctionRegistry extends FunctionRegistry {
+class SimpleFunctionRegistry extends FunctionRegistry with Logging {
 
   @GuardedBy("this")
   private val functionBuilders =
@@ -103,7 +103,13 @@ class SimpleFunctionRegistry extends FunctionRegistry {
       name: FunctionIdentifier,
       info: ExpressionInfo,
       builder: FunctionBuilder): Unit = synchronized {
-    functionBuilders.put(normalizeFuncName(name), (info, builder))
+    val normalizedName = normalizeFuncName(name)
+    val newFunction = (info, builder)
+    functionBuilders.put(normalizedName, newFunction) match {
+      case Some(previousFunction) if previousFunction != newFunction =>
+        logWarning(s"The function $normalizedName replaced a previously registered function.")
+      case _ =>
+    }
   }
 
   override def lookupFunction(name: FunctionIdentifier, children: Seq[Expression]): Expression = {
@@ -267,6 +273,7 @@ object FunctionRegistry {
     expression[Subtract]("-"),
     expression[Multiply]("*"),
     expression[Divide]("/"),
+    expression[IntegralDivide]("div"),
     expression[Remainder]("%"),
 
     // aggregate functions
@@ -274,6 +281,7 @@ object FunctionRegistry {
     expression[Average]("avg"),
     expression[Corr]("corr"),
     expression[Count]("count"),
+    expression[CountIf]("count_if"),
     expression[CovPopulation]("covar_pop"),
     expression[CovSample]("covar_samp"),
     expression[First]("first"),
@@ -282,8 +290,10 @@ object FunctionRegistry {
     expression[Last]("last"),
     expression[Last]("last_value"),
     expression[Max]("max"),
+    expression[MaxBy]("max_by"),
     expression[Average]("mean"),
     expression[Min]("min"),
+    expression[MinBy]("min_by"),
     expression[Percentile]("percentile"),
     expression[Skewness]("skewness"),
     expression[ApproximatePercentile]("percentile_approx"),
@@ -299,6 +309,9 @@ object FunctionRegistry {
     expression[CollectList]("collect_list"),
     expression[CollectSet]("collect_set"),
     expression[CountMinSketchAgg]("count_min_sketch"),
+    expression[EveryAgg]("every"),
+    expression[AnyAgg]("any"),
+    expression[SomeAgg]("some"),
 
     // string functions
     expression[Ascii]("ascii"),
@@ -414,6 +427,7 @@ object FunctionRegistry {
     expression[MapFromArrays]("map_from_arrays"),
     expression[MapKeys]("map_keys"),
     expression[MapValues]("map_values"),
+    expression[MapEntries]("map_entries"),
     expression[MapFromEntries]("map_from_entries"),
     expression[MapConcat]("map_concat"),
     expression[Size]("size"),
@@ -432,9 +446,13 @@ object FunctionRegistry {
     expression[ArrayRemove]("array_remove"),
     expression[ArrayDistinct]("array_distinct"),
     expression[ArrayTransform]("transform"),
+    expression[MapFilter]("map_filter"),
     expression[ArrayFilter]("filter"),
     expression[ArrayExists]("exists"),
     expression[ArrayAggregate]("aggregate"),
+    expression[TransformValues]("transform_values"),
+    expression[TransformKeys]("transform_keys"),
+    expression[MapZipWith]("map_zip_with"),
     expression[ZipWith]("zip_with"),
 
     CreateStruct.registryEntry,
@@ -445,6 +463,7 @@ object FunctionRegistry {
     expression[Md5]("md5"),
     expression[Uuid]("uuid"),
     expression[Murmur3Hash]("hash"),
+    expression[XxHash64]("xxhash64"),
     expression[Sha1]("sha"),
     expression[Sha1]("sha1"),
     expression[Sha2]("sha2"),
@@ -514,7 +533,12 @@ object FunctionRegistry {
     castAlias("date", DateType),
     castAlias("timestamp", TimestampType),
     castAlias("binary", BinaryType),
-    castAlias("string", StringType)
+    castAlias("string", StringType),
+
+    // csv
+    expression[CsvToStructs]("from_csv"),
+    expression[SchemaOfCsv]("schema_of_csv"),
+    expression[StructsToCsv]("to_csv")
   )
 
   val builtin: SimpleFunctionRegistry = {
@@ -599,7 +623,7 @@ object FunctionRegistry {
     val clazz = scala.reflect.classTag[Cast].runtimeClass
     val usage = "_FUNC_(expr) - Casts the value `expr` to the target data type `_FUNC_`."
     val expressionInfo =
-      new ExpressionInfo(clazz.getCanonicalName, null, name, usage, "", "", "", "")
+      new ExpressionInfo(clazz.getCanonicalName, null, name, usage, "", "", "", "", "")
     (name, (expressionInfo, builder))
   }
 
@@ -619,7 +643,8 @@ object FunctionRegistry {
           df.arguments(),
           df.examples(),
           df.note(),
-          df.since())
+          df.since(),
+          df.deprecated())
       } else {
         // This exists for the backward compatibility with old `ExpressionDescription`s defining
         // the extended description in `extended()`.

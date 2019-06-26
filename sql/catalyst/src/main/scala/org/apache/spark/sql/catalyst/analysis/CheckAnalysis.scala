@@ -25,12 +25,15 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.optimizer.BooleanSimplification
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 /**
  * Throws user facing errors when passed invalid queries that fail to analyze.
  */
 trait CheckAnalysis extends PredicateHelper {
+
+  import org.apache.spark.sql.catalog.v2.CatalogV2Implicits._
 
   /**
    * Override to provide additional checks for correct analysis.
@@ -87,7 +90,7 @@ trait CheckAnalysis extends PredicateHelper {
       case p if p.analyzed => // Skip already analyzed sub-plans
 
       case u: UnresolvedRelation =>
-        u.failAnalysis(s"Table or view not found: ${u.tableIdentifier}")
+        u.failAnalysis(s"Table or view not found: ${u.multipartIdentifier.quoted}")
 
       case operator: LogicalPlan =>
         // Check argument data types of higher-order functions downwards first.
@@ -106,7 +109,7 @@ trait CheckAnalysis extends PredicateHelper {
 
         operator transformExpressionsUp {
           case a: Attribute if !a.resolved =>
-            val from = operator.inputSet.map(_.qualifiedName).mkString(", ")
+            val from = operator.inputSet.toSeq.map(_.qualifiedName).mkString(", ")
             a.failAnalysis(s"cannot resolve '${a.sql}' given input columns: [$from]")
 
           case e: Expression if e.checkInputDataTypes().isFailure =>
@@ -133,11 +136,6 @@ trait CheckAnalysis extends PredicateHelper {
              if order.isEmpty || !frame.isOffset =>
             failAnalysis("An offset window function can only be evaluated in an ordered " +
               s"row-based window frame with a single offset: $w")
-
-          case _ @ WindowExpression(_: PythonUDF,
-            WindowSpecDefinition(_, _, frame: SpecifiedWindowFrame))
-              if !frame.isUnbounded =>
-            failAnalysis("Only unbounded window frame is supported with Pandas UDFs.")
 
           case w @ WindowExpression(e, s) =>
             // Only allow window functions with an aggregate expression or an offset window
@@ -176,13 +174,13 @@ trait CheckAnalysis extends PredicateHelper {
             failAnalysis("Null-aware predicate sub-queries cannot be used in nested " +
               s"conditions: $condition")
 
-          case j @ Join(_, _, _, Some(condition)) if condition.dataType != BooleanType =>
+          case j @ Join(_, _, _, Some(condition), _) if condition.dataType != BooleanType =>
             failAnalysis(
               s"join condition '${condition.sql}' " +
                 s"of type ${condition.dataType.catalogString} is not a boolean.")
 
           case Aggregate(groupingExprs, aggregateExprs, child) =>
-            def isAggregateExpression(expr: Expression) = {
+            def isAggregateExpression(expr: Expression): Boolean = {
               expr.isInstanceOf[AggregateExpression] || PythonUDF.isGroupedAggPandasUDF(expr)
             }
 
@@ -300,6 +298,21 @@ trait CheckAnalysis extends PredicateHelper {
               }
             }
 
+          case CreateTableAsSelect(_, _, partitioning, query, _, _, _) =>
+            val references = partitioning.flatMap(_.references).toSet
+            val badReferences = references.map(_.fieldNames).flatMap { column =>
+              query.schema.findNestedField(column) match {
+                case Some(_) =>
+                  None
+                case _ =>
+                  Some(s"${column.quoted} is missing or is in a map or array")
+              }
+            }
+
+            if (badReferences.nonEmpty) {
+              failAnalysis(s"Invalid partitioning: ${badReferences.mkString(", ")}")
+            }
+
           case _ => // Fallbacks to the following checks
         }
 
@@ -308,7 +321,7 @@ trait CheckAnalysis extends PredicateHelper {
             val missingAttributes = o.missingInput.mkString(",")
             val input = o.inputSet.mkString(",")
             val msgForMissingAttributes = s"Resolved attribute(s) $missingAttributes missing " +
-              s"from $input in operator ${operator.simpleString}."
+              s"from $input in operator ${operator.simpleString(SQLConf.get.maxToStringFields)}."
 
             val resolver = plan.conf.resolver
             val attrsWithSameName = o.missingInput.filter { missing =>
@@ -373,19 +386,39 @@ trait CheckAnalysis extends PredicateHelper {
               s"""nondeterministic expressions are only allowed in
                  |Project, Filter, Aggregate or Window, found:
                  | ${o.expressions.map(_.sql).mkString(",")}
-                 |in operator ${operator.simpleString}
+                 |in operator ${operator.simpleString(SQLConf.get.maxToStringFields)}
                """.stripMargin)
 
           case _: UnresolvedHint =>
             throw new IllegalStateException(
               "Internal error: logical hint operator should have been removed during analysis")
 
+          case f @ Filter(condition, _)
+            if PlanHelper.specialExpressionsInUnsupportedOperator(f).nonEmpty =>
+            val invalidExprSqls = PlanHelper.specialExpressionsInUnsupportedOperator(f).map(_.sql)
+            failAnalysis(
+              s"""
+                 |Aggregate/Window/Generate expressions are not valid in where clause of the query.
+                 |Expression in where clause: [${condition.sql}]
+                 |Invalid expressions: [${invalidExprSqls.mkString(", ")}]""".stripMargin)
+
+          case other if PlanHelper.specialExpressionsInUnsupportedOperator(other).nonEmpty =>
+            val invalidExprSqls =
+              PlanHelper.specialExpressionsInUnsupportedOperator(other).map(_.sql)
+            failAnalysis(
+              s"""
+                 |The query operator `${other.nodeName}` contains one or more unsupported
+                 |expression types Aggregate, Window or Generate.
+                 |Invalid expressions: [${invalidExprSqls.mkString(", ")}]""".stripMargin
+            )
+
           case _ => // Analysis successful!
         }
     }
     extendedCheckRules.foreach(_(plan))
     plan.foreachUp {
-      case o if !o.resolved => failAnalysis(s"unresolved operator ${o.simpleString}")
+      case o if !o.resolved =>
+        failAnalysis(s"unresolved operator ${o.simpleString(SQLConf.get.maxToStringFields)}")
       case _ =>
     }
 
@@ -612,7 +645,7 @@ trait CheckAnalysis extends PredicateHelper {
         failOnNonEqualCorrelatedPredicate(foundNonEqualCorrelatedPred, a)
 
       // Join can host correlated expressions.
-      case j @ Join(left, right, joinType, _) =>
+      case j @ Join(left, right, joinType, _, _) =>
         joinType match {
           // Inner join, like Filter, can be anywhere.
           case _: InnerLike =>

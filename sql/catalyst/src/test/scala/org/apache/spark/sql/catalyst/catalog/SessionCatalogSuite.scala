@@ -509,6 +509,96 @@ abstract class SessionCatalogSuite extends AnalysisTest {
     }
   }
 
+  test("get tables by name") {
+    withBasicCatalog { catalog =>
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1", Some("db2")),
+          TableIdentifier("tbl2", Some("db2"))
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1", "tbl2")))
+      // Get table without explicitly specifying database
+      catalog.setCurrentDatabase("db2")
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1"),
+          TableIdentifier("tbl2")
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1", "tbl2")))
+    }
+  }
+
+  test("get tables by name when some tables do not exist") {
+    withBasicCatalog { catalog =>
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1", Some("db2")),
+          TableIdentifier("tblnotexit", Some("db2"))
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1")))
+      // Get table without explicitly specifying database
+      catalog.setCurrentDatabase("db2")
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1"),
+          TableIdentifier("tblnotexit")
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1")))
+    }
+  }
+
+  test("get tables by name when contains invalid name") {
+    // scalastyle:off
+    val name = "砖"
+    // scalastyle:on
+    withBasicCatalog { catalog =>
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1", Some("db2")),
+          TableIdentifier(name, Some("db2"))
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1")))
+      // Get table without explicitly specifying database
+      catalog.setCurrentDatabase("db2")
+      assert(catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1"),
+          TableIdentifier(name)
+        )
+      ) == catalog.externalCatalog.getTablesByName("db2", Seq("tbl1")))
+    }
+  }
+
+  test("get tables by name when empty") {
+    withBasicCatalog { catalog =>
+      assert(catalog.getTablesByName(Seq.empty)
+        == catalog.externalCatalog.getTablesByName("db2", Seq.empty))
+      // Get table without explicitly specifying database
+      catalog.setCurrentDatabase("db2")
+      assert(catalog.getTablesByName(Seq.empty)
+        == catalog.externalCatalog.getTablesByName("db2", Seq.empty))
+    }
+  }
+
+  test("get tables by name when tables belong to different databases") {
+    withBasicCatalog { catalog =>
+      intercept[AnalysisException](catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1", Some("db1")),
+          TableIdentifier("tbl2", Some("db2"))
+        )
+      ))
+      // Get table without explicitly specifying database
+      catalog.setCurrentDatabase("db2")
+      intercept[AnalysisException](catalog.getTablesByName(
+        Seq(
+          TableIdentifier("tbl1", Some("db1")),
+          TableIdentifier("tbl2")
+        )
+      ))
+    }
+  }
+
   test("lookup table relation") {
     withBasicCatalog { catalog =>
       val tempTable1 = Range(1, 10, 1, 10)
@@ -1446,6 +1536,20 @@ abstract class SessionCatalogSuite extends AnalysisTest {
       } finally {
         catalog.reset()
       }
+    }
+  }
+
+  test("SPARK-24544: test print actual failure cause when look up function failed") {
+    withBasicCatalog { catalog =>
+      val cause = intercept[NoSuchFunctionException] {
+        catalog.failFunctionLookup(FunctionIdentifier("failureFunc"),
+          Some(new Exception("Actual error")))
+      }
+
+      // fullStackTrace will be printed, but `cause.getMessage` has been
+      // override in `AnalysisException`,so here we get the root cause
+      // exception message for check.
+      assert(cause.cause.get.getMessage.contains("Actual error"))
     }
   }
 }
